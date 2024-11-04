@@ -1,8 +1,10 @@
 #ifndef MAIN_HEADER
 #define MAIN_HEADER
 
-#include <boost/asio.hpp>
 #include <iostream>
+#include <boost/asio.hpp>
+#include <boost/bind/bind.hpp>
+
 
 #include "clases.hpp"
 

@@ -9,8 +9,8 @@ SHUTDOWN: Finaliza la ejecución del servidor. (terminar programa servidor)
 HELP:
 SALIR: terminar programa cliente
 
-Desconexión inesperada. (por ejemplo cortar el emulador)
-Tiempo de espera sin respuesta.
+Desconexión inesperada?
+Tiempo de espera sin respuesta
 
 funciones: ingresarParametros
            establecerConexion
@@ -18,6 +18,43 @@ funciones: ingresarParametros
 */
 
 #include "mainHeader.hpp"
+
+bool activo = true;
+boost::system::error_code ec = error::would_block;      //errorcode se inicializa con would_block (la operación no está terminada)
+size_t length = 0;
+
+//Esta función se activa cuando el deadline_timer alcanza el límite de tiempo sin que la lectura haya finalizado.
+void onTimeout(const boost::system::error_code& error, serial_port& serial) {
+    if (!error) {
+        serial.cancel();  //cancela la lectura
+    }
+}
+
+//Esta función se llama cuando la lectura termina ya sea con exito o error
+void onRead(const boost::system::error_code& error, size_t len) {
+    ec = error;
+    length = len;
+}
+
+bool leerConTimeout(serial_port &serial, deadline_timer &timer, io_context &io, char* buffer, size_t buffer_size) {
+    ec = error::would_block;    //cada vez que se llama a la funcion reinicializo ec
+    timer.expires_from_now(boost::posix_time::seconds(1)); //timeout 1 seg
+
+    timer.async_wait(boost::bind(onTimeout, boost::placeholders::_1, boost::ref(serial)));  //uso bind para enlazar onTimeout con el timer. así si se llega al timeout, la función cancela la lectura
+
+    serial.async_read_some(boost::asio::buffer(buffer, buffer_size),
+                           boost::bind(onRead, boost::placeholders::_1, boost::placeholders::_2)
+                           );  //la funcion onRead se llama cuando la lectura termine
+
+    // Ejecuta la operación asíncrona en un bucle hasta que termine o se alcance el timeout
+    do {
+        io.run_one();   //ejecutar solo una operación asíncrona a la vez
+    } while (ec == boost::asio::error::would_block && activo);  //ec cambia de valor cuando termina una lectura o finaliza el timeout
+
+    timer.cancel();     //cancela el timeout
+    return !ec;  //devuelve true si la lectura es existosa
+}
+
 
 int main(){
     string puerto;
@@ -90,15 +127,16 @@ int main(){
             char read_buf[256];     //256 bytes
             boost::system::error_code error;    
             size_t len;
-
+            deadline_timer timer(io);
+                
             len = serial.read_some(boost::asio::buffer(read_buf), error);
             if (error)
                 cerr << "Error de lectura: " << error.message() << endl;
             else
-                cout << "Recibido: " << string(read_buf, len) << endl;            
+                cout << "Recibido: " << string(read_buf, len) << endl;
             
             string comando;
-            bool activo = true;
+            activo = true;
 
             while(activo){
                 cout << "\nIngrese comandos: ";
@@ -109,12 +147,12 @@ int main(){
 
                 write(serial, buffer(comando));
 
-                //leo la respuesta                
-                len = serial.read_some(boost::asio::buffer(read_buf), error);
-                if (error)
-                    cerr << "Error de lectura: " << error.message() << endl;
-                else
-                    cout << "Recibido: " << string(read_buf, len) << endl;  
+                //leo la respuesta con timeout 
+                if (leerConTimeout(serial, timer, io, read_buf, sizeof(read_buf))) {
+                    cout << "Recibido: " << string(read_buf, length) << endl;
+                } else {
+                    cerr << "El servidor tardó mucho en responder." << endl;
+                }  
             }
         }
         catch (boost::system::system_error& e) {
@@ -123,6 +161,9 @@ int main(){
             if (intentos >= 3) {
                 cerr << "Conexión fallida después de 3 intentos." << endl;
             }
+        }
+        catch (out_of_range& e) {
+            cerr << e.what() << endl;
         }
         catch (...) {
             cerr << "Error desconocido" << endl;

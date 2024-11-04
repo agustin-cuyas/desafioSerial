@@ -4,42 +4,56 @@ funciones: conexion
            
 El servidor debe tener un timeout configurable. Si no recibe un comando en un determinado período de tiempo, debe cerrar la conexión automáticamente.           
 
-así como está shutdown no apaga porque solo debería funcionar en Ejecucion::siguienteEstado. Ver si se puede pasar la variable activo
-
-el timeout anda bastante bien, solo que se cierra unicamente al recibir un mensaje luego del aviso de cierre
 */
 #include "mainHeader.hpp"
 
-atomic<bool> activo(true);  //defino como atomic para que un hilo pueda modificar la variable que está siendo leida por otro proceso.
-double timeout;
-std::chrono::steady_clock::time_point tiempoInicio;
+bool activo = true;
+int timeout;
+boost::system::error_code ec = error::would_block;      //errorcode se inicializa con would_block (la opercación no está terminada)
+size_t length = 0;
 
-DWORD WINAPI timerThread(LPVOID lpParam) {
-    while (activo) {
-        auto tiempoTranscurrido = std::chrono::steady_clock::now() - tiempoInicio;
-        if (std::chrono::duration<double>(tiempoTranscurrido).count() >= timeout) {
-            std::cout << "Timeout alcanzado. Apagando el servidor..." << std::endl;
-            activo = false;
-            break;
-        }
-        Sleep(100);  // Pequeño retardo para reducir la carga del CPU
+//Esta función se activa cuando el deadline_timer alcanza el límite de tiempo sin que la lectura haya finalizado.
+void onTimeout(const boost::system::error_code& error, serial_port& serial) {
+    if (!error) {
+        activo = false;
+        serial.cancel();  //cancela la lectura
     }
-    return 0;
 }
 
+//Esta función se llama cuando la lectura termina ya sea con exito o error
+void onRead(const boost::system::error_code& error, size_t len) {
+    ec = error;
+    length = len;
+}
+
+bool leerConTimeout(serial_port &serial, deadline_timer &timer, io_context &io, char* buffer, size_t buffer_size) {
+    ec = error::would_block;    //cada vez que se llama a la funcion reinicializo ec
+    timer.expires_from_now(boost::posix_time::seconds(timeout)); //timeout configurable
+
+    timer.async_wait(boost::bind(onTimeout, boost::placeholders::_1, boost::ref(serial)));  //uso bind para enlazar onTimeout con el timer. así si se llega al timeout, la función cancela la lectura
+
+    serial.async_read_some(boost::asio::buffer(buffer, buffer_size),
+                           boost::bind(onRead, boost::placeholders::_1, boost::placeholders::_2)
+                           );  //la funcion onRead se llama cuando la lectura termine
+
+    // Ejecuta la operación asíncrona en un bucle hasta que termine o se alcance el timeout
+    do {
+        io.run_one();   //ejecutar solo una operación asíncrona a la vez
+    } while (ec == boost::asio::error::would_block && activo);  //ec cambia de valor cuando termina una lectura o finaliza el timeout
+
+    timer.cancel();     //cancela el timeout
+    return !ec;  //devuelve true si la lectura es existosa
+}
 
 int main(){
     
     Estado* estado = new Esperando;
     cout << "Antes de conectar ingrese el timeout deseado: ";
     cin >> timeout;
-    cout << "El servidor se desconectará si no recibe comandos luego de " << timeout << " segundos." << endl;
-    
+    cout << "El servidor se desconectará si no recibe comandos luego de " << timeout << " segundos." << endl;    
 
     try{
         io_context io;
-
-        //steady_timer timer(io, std::chrono::seconds(static_cast<int>(timeout)));    //establece el timer en base al timeout
         
         serial_port serial(io, "COM3");
         serial.set_option(serial_port_base::baud_rate(9600));
@@ -48,78 +62,66 @@ int main(){
         serial.set_option(serial_port_base::parity(serial_port_base::parity::none));
 
         cout << "Servidor iniciado, esperando cliente..." << endl;
-        
-        //atomic<bool> activo(true);  //defino como atomic para que un hilo pueda modificar la variable que está siendo leida por otro proceso.
-        
-        tiempoInicio = std::chrono::steady_clock::now();
 
-        HANDLE hTimerThread = CreateThread(NULL, 0, timerThread, NULL, 0, NULL);
+        char read_buf[256];     //256 bytes
+        boost::system::error_code error;      
 
-        if (hTimerThread == NULL) {
-            std::cerr << "Error al crear el hilo del timer" << std::endl;
-            return 1;
-        }
+        deadline_timer timer(io);      
 
         while(activo){
-            char read_buf[256];     //256 bytes
-            boost::system::error_code error;
-            
-            size_t len = serial.read_some(buffer(read_buf), error);
+            //size_t len = serial.read_some(buffer(read_buf), error);
+            if (leerConTimeout(serial, timer, io, read_buf, sizeof(read_buf))) {
+                cout << "Recibido: " << string(read_buf, length) << endl;
+                string mensaje(read_buf, strlen(read_buf));
 
-            if (error)
-                cerr << "Error de lectura: " << error.message() << endl;
-            else 
-                cout << "Recibido: " << string(read_buf, len) << endl;   
-
-            //resetear el timer al recibir comandos
-            tiempoInicio = std::chrono::steady_clock::now();
-
-            
-            Comando comando = (string(read_buf, len) == "Hola desde cliente!\r\n") ? Comando::HANDSHAKE     //Comando:: porque es una enum class
-                            : (string(read_buf, len) == "STATUS" ? Comando::STATUS
-                            : (string(read_buf, len) == "START" ? Comando::START 
-                            : (string(read_buf, len) == "STOP" ? Comando::STOP 
-                            : (string(read_buf, len) == "SHUTDOWN" ? Comando::SHUTDOWN 
-                            : (string(read_buf, len) == "HELP" ? Comando::HELP 
+                Comando comando = (string(read_buf, length) == "Hola desde cliente!\r\n") ? Comando::HANDSHAKE     //Comando:: porque es una enum class
+                            : (string(read_buf, length) == "STATUS" ? Comando::STATUS
+                            : (string(read_buf, length) == "START" ? Comando::START 
+                            : (string(read_buf, length) == "STOP" ? Comando::STOP 
+                            : (string(read_buf, length) == "SHUTDOWN" ? Comando::SHUTDOWN 
+                            : (string(read_buf, length) == "HELP" ? Comando::HELP 
                             :  Comando::DEFAULT ) ) ) ) ) ;
 
-            string respuesta;
+                string respuesta;
 
-            switch(comando){
-                case Comando::HANDSHAKE:
-                    respuesta = "Hola desde el servidor! Cliente conectado";
-                    break;
-                case Comando::STATUS:
-                    estado->ejecutar(respuesta);
-                    break;
-                case Comando::START:
-                    estado = estado->siguienteEstado(comando, respuesta);
-                    break;
-                case Comando::STOP:
-                    estado = estado->siguienteEstado(comando, respuesta);
-                    break;
-                case Comando::SHUTDOWN:
-                    estado = estado->siguienteEstado(comando, respuesta);
-                    //activo = false;
-                    break;
-                case Comando::HELP:
-                    respuesta = "Los comandos disponibles son: \nSTATUS: Solicita el estado actual de la máquina de estados. \nSTART: Inicia el proceso. \nSTOP: Detiene el proceso. \nSHUTDOWN: Apaga el servidor \nHELP: Muestra esta ayuda.";
-                    break;
-                case Comando::DEFAULT:
-                    respuesta = "Comando desconocido. Use HELP para ver los comandos disponibles";
-                    break;
+                switch(comando){
+                    case Comando::HANDSHAKE:
+                        respuesta = "Hola desde el servidor! Cliente conectado";
+                        break;
+                    case Comando::STATUS:
+                        estado->ejecutar(respuesta);
+                        break;
+                    case Comando::START:
+                        estado = estado->siguienteEstado(comando, respuesta);
+                        break;
+                    case Comando::STOP:
+                        estado = estado->siguienteEstado(comando, respuesta);
+                        break;
+                    case Comando::SHUTDOWN:
+                        estado = estado->siguienteEstado(comando, respuesta);
+                        if(dynamic_cast<Apagado*>(estado))
+                            activo = false;
+                        break;
+                    case Comando::HELP:
+                        respuesta = "Los comandos disponibles son: \nSTATUS: Solicita el estado actual de la máquina de estados. \nSTART: Inicia el proceso. \nSTOP: Detiene el proceso. \nSHUTDOWN: Apaga el servidor \nHELP: Muestra esta ayuda.";
+                        break;
+                    case Comando::DEFAULT:
+                        respuesta = "Comando desconocido. Use HELP para ver los comandos disponibles";
+                        break;
+                }
+
+            write(serial, buffer(respuesta));
+            }             
+            else{
+                write(serial, buffer("Timeout alcanzado. Apagando sistema..."));
+                cerr << "Timeout alcanzado. Apagando el servidor..." << endl;
             }
 
-            write(serial, buffer(respuesta));        
-
-        }   //while(activo)         
-        // Esperar a que el hilo de timer termine
-        WaitForSingleObject(hTimerThread, INFINITE);
-        CloseHandle(hTimerThread);
+        }   //while(activo)
     }    
 
     catch (boost::system::system_error& e) {
-        cerr << "Error: " << e.what() << endl;
+        cerr << "Falla al establecer la conexión: " << e.what() << endl;
     } catch (...) {
         cerr << "Error desconocido" << endl;
     }
