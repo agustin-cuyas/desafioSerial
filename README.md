@@ -15,37 +15,37 @@ Para el desarrollo de los programas decidí hacer un mainHeader y dos archivos d
 Lo primero que se debe hacer es encender el emulador y crear una conexión con el puerto correspondiente, en este caso el COM3.
 Luego se debe ejecutar el servidor que se conectará al puerto con los parámetros correctos. Al iniciar pedirá un timeout, permanecerá encendido hasta que transcurra este tiempo sin recibir comandos.
 Finalmente el cliente al ser ejecutado pedirá los parámetros para conectarse al servidor, estos deben ser:
->Puerto: COM3
->Baud rate: 9600
->Paridad: Ninguno
->Bits de datos: 8
->Bits de parada: 1
+>Puerto: COM3  
+Baud rate: 9600  
+Paridad: Ninguno  
+Bits de datos: 8  
+Bits de parada: 1  
 
 	Si se ingresa mal el puerto, se devolverá un error de conexión. Si se ingresa erroneamente el tamaño del byte el cliente recibirá un error de fuera de rango. En ambos casos se dará un nuevo intento al cliente, siendo el máximo 3.
 	Una vez que la conexión fue exitosa, el cliente manda un mensaje al servidor que es respondido por este a modo de "handshake".
 	A partir de ahí el cliente es capaz de enviar comandos al servidor para manejar la máquina de estados, apagar el servidor o desconectarse. Los comandos son:
-	>STATUS: Solicita al servidor el estado actual de la máquina de estados.
-  >START: Inicia un proceso en el servidor.
-  >STOP: Detiene el proceso en el servidor.
-  >SHUTDOWN: Finaliza la ejecución del servidor.
-  >HELP: Muestra la lista de comandos.
+  >STATUS: Solicita al servidor el estado actual de la máquina de estados.  
+  >START: Inicia un proceso en el servidor.  
+  >STOP: Detiene el proceso en el servidor.  
+  >SHUTDOWN: Finaliza la ejecución del servidor.  
+  >HELP: Muestra la lista de comandos.  
   >SALIR: Desconecta al cliente del puerto, permitiendo iniciar otra conexión.
 	
 	En el caso que el cliente no reciba una respuesta del servidor por más de un segundo, se avisa y da a entender que probablemente éste este apagado.
 	
 - #### Descripción de las herramientas utilizadas.
 Como se mencionó en secciones anteriores, en el desarrollo del desafío se utilizaron herramientas adicionales como son la librería Boost y el emulador VSPE. 
-De la librería se pueden destacar algunas instrucciones fundamentales para la conexión y comunicación:
-` boost::asio :: serial_port::open("COM3");		//abre el puerto COM3`
-`boost::asio :: serial_port::set_option();	//se utilizará para configurar los otros parámetros`
-`boost::asio :: serial.set_option(serial_port_base::baud_rate(9600));`
-`boost::asio :: serial.set_option(serial_port_base::character_size(8));`
-`boost::asio :: serial.set_option(serial_port_base::stop_bits(serial_port_base:: stop_bits::one));`
-`boost::asio :: serial.set_option(serial_port_base::parity(serial_port_base:: parity::none));`
-`//Para escribir en el puerto:`
-` write(serial, buffer("mensaje));`
-`//Para leer del puerto:`
-`serial.read_some(buffer, error);`
+De la librería se pueden destacar algunas instrucciones fundamentales para la conexión y comunicación:  
+` boost::asio :: serial_port::open("COM3");		//abre el puerto COM3`  
+`boost::asio :: serial_port::set_option();	//se utilizará para configurar los otros parámetros`  
+`boost::asio :: serial.set_option(serial_port_base::baud_rate(9600));`  
+`boost::asio :: serial.set_option(serial_port_base::character_size(8));`  
+`boost::asio :: serial.set_option(serial_port_base::stop_bits(serial_port_base:: stop_bits::one));`  
+`boost::asio :: serial.set_option(serial_port_base::parity(serial_port_base:: parity::none));`  
+`//Para escribir en el puerto:`  
+` write(serial, buffer("mensaje));`  
+`//Para leer del puerto:`  
+`serial.read_some(buffer, error);`  
 Con respecto al emulador, su uso es sencillo:
 Se debe ir a Device → Create → Connector → COM3 → Finalizar → Start Emulator
 Justamente al ser tan sencillo, no es muy realista, ya que tanto servidor como cliente podrían configurarse con distinta tasa de baudios, distinta longitud de mensaje, etcétera y aún recibir bien los mensajes. Esto se debe a que el emulador hace una interpretación de lo que recibe y de esta manera puede ser leído con otra configuración.
