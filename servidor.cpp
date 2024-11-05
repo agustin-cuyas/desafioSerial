@@ -1,10 +1,3 @@
-/*
-
-funciones: conexion
-           
-El servidor debe tener un timeout configurable. Si no recibe un comando en un determinado período de tiempo, debe cerrar la conexión automáticamente.           
-
-*/
 #include "mainHeader.hpp"
 
 bool activo = true;
@@ -45,6 +38,59 @@ bool leerConTimeout(serial_port &serial, deadline_timer &timer, io_context &io, 
     return !ec;  //devuelve true si la lectura es existosa
 }
 
+void conectarSerial(serial_port& serial, io_context& io){
+    serial.open("COM3");
+    serial.set_option(serial_port_base::baud_rate(9600));
+    serial.set_option(serial_port_base::character_size(8));
+    serial.set_option(serial_port_base::stop_bits(serial_port_base::stop_bits::one));
+    serial.set_option(serial_port_base::parity(serial_port_base::parity::none));
+
+    cout << "Servidor iniciado, esperando cliente..." << endl;
+}
+
+string comandosHandle(const char* read_buf, Estado* &estado){
+    cout << "Recibido: " << string(read_buf, length) << endl;
+    string mensaje(read_buf, strlen(read_buf));
+
+    Comando comando = (string(read_buf, length) == "Hola desde cliente!\r\n") ? Comando::HANDSHAKE     //Comando:: porque es una enum class
+                : (string(read_buf, length) == "STATUS" ? Comando::STATUS
+                : (string(read_buf, length) == "START" ? Comando::START 
+                : (string(read_buf, length) == "STOP" ? Comando::STOP 
+                : (string(read_buf, length) == "SHUTDOWN" ? Comando::SHUTDOWN 
+                : (string(read_buf, length) == "HELP" ? Comando::HELP 
+                :  Comando::DEFAULT ) ) ) ) ) ;
+
+    string respuesta;
+
+    switch(comando){
+        case Comando::HANDSHAKE:
+            respuesta = "Hola desde el servidor! Cliente conectado";
+            break;
+        case Comando::STATUS:
+            estado->ejecutar(respuesta);
+            break;
+        case Comando::START:
+            estado = estado->siguienteEstado(comando, respuesta);
+            break;
+        case Comando::STOP:
+            estado = estado->siguienteEstado(comando, respuesta);
+            break;
+        case Comando::SHUTDOWN:
+            estado = estado->siguienteEstado(comando, respuesta);
+            if(dynamic_cast<Apagado*>(estado))
+                activo = false;
+            break;
+        case Comando::HELP:
+            respuesta = "Los comandos disponibles son: \nSTATUS: Solicita el estado actual de la máquina de estados. \nSTART: Inicia el proceso. \nSTOP: Detiene el proceso. \nSHUTDOWN: Apaga el servidor \nHELP: Muestra esta ayuda.";
+            break;
+        case Comando::DEFAULT:
+            respuesta = "Comando desconocido. Use HELP para ver los comandos disponibles";
+            break;
+    }
+
+    return respuesta;
+}
+
 int main(){
     
     Estado* estado = new Esperando;
@@ -54,70 +100,28 @@ int main(){
 
     try{
         io_context io;
+        serial_port serial(io);
+
+        conectarSerial(serial, io);
         
-        serial_port serial(io, "COM3");
-        serial.set_option(serial_port_base::baud_rate(9600));
-        serial.set_option(serial_port_base::character_size(8));
-        serial.set_option(serial_port_base::stop_bits(serial_port_base::stop_bits::one));
-        serial.set_option(serial_port_base::parity(serial_port_base::parity::none));
-
-        cout << "Servidor iniciado, esperando cliente..." << endl;
-
         char read_buf[256];     //256 bytes
         boost::system::error_code error;      
 
         deadline_timer timer(io);      
 
         while(activo){
-            //size_t len = serial.read_some(buffer(read_buf), error);
+            
             if (leerConTimeout(serial, timer, io, read_buf, sizeof(read_buf))) {
-                cout << "Recibido: " << string(read_buf, length) << endl;
-                string mensaje(read_buf, strlen(read_buf));
 
-                Comando comando = (string(read_buf, length) == "Hola desde cliente!\r\n") ? Comando::HANDSHAKE     //Comando:: porque es una enum class
-                            : (string(read_buf, length) == "STATUS" ? Comando::STATUS
-                            : (string(read_buf, length) == "START" ? Comando::START 
-                            : (string(read_buf, length) == "STOP" ? Comando::STOP 
-                            : (string(read_buf, length) == "SHUTDOWN" ? Comando::SHUTDOWN 
-                            : (string(read_buf, length) == "HELP" ? Comando::HELP 
-                            :  Comando::DEFAULT ) ) ) ) ) ;
+                write(serial, buffer(comandosHandle(read_buf, estado)));
 
-                string respuesta;
-
-                switch(comando){
-                    case Comando::HANDSHAKE:
-                        respuesta = "Hola desde el servidor! Cliente conectado";
-                        break;
-                    case Comando::STATUS:
-                        estado->ejecutar(respuesta);
-                        break;
-                    case Comando::START:
-                        estado = estado->siguienteEstado(comando, respuesta);
-                        break;
-                    case Comando::STOP:
-                        estado = estado->siguienteEstado(comando, respuesta);
-                        break;
-                    case Comando::SHUTDOWN:
-                        estado = estado->siguienteEstado(comando, respuesta);
-                        if(dynamic_cast<Apagado*>(estado))
-                            activo = false;
-                        break;
-                    case Comando::HELP:
-                        respuesta = "Los comandos disponibles son: \nSTATUS: Solicita el estado actual de la máquina de estados. \nSTART: Inicia el proceso. \nSTOP: Detiene el proceso. \nSHUTDOWN: Apaga el servidor \nHELP: Muestra esta ayuda.";
-                        break;
-                    case Comando::DEFAULT:
-                        respuesta = "Comando desconocido. Use HELP para ver los comandos disponibles";
-                        break;
-                }
-
-            write(serial, buffer(respuesta));
             }             
             else{
                 write(serial, buffer("Timeout alcanzado. Apagando sistema..."));
                 cerr << "Timeout alcanzado. Apagando el servidor..." << endl;
             }
 
-        }   //while(activo)
+        }
     }    
 
     catch (boost::system::system_error& e) {
